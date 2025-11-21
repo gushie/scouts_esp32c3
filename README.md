@@ -24,5 +24,8 @@ Running the main.py (or main_menu.py) will load a menu to select from the progra
 ### Start tweaking the programs
 Feel free to edit the files to change what they do! Don't worry about breaking anything. You can always 'undo' or download the files and start over!
 
+## Tutorial
+See the "Scouts Micropython Mini‑course for esp32‑c3.docx" file to begin programming in Python
+
 ## simple_esp.py
-Simple_ESP is a file full of functions to more easily access the features of the ESP32-C3 and the OLED screen. See separate documentation for more information
+Simple_ESP is a file full of functions to more easily access the features of the ESP32-C3 and the OLED screen. See [separate documentation](SIMPLE_ESP.md) for more information
