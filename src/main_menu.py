@@ -7,22 +7,7 @@
 # should define a main() function.
 
 from simple_esp import SmallDisplay, Input
-import time, sys, gc
-
-# ----------------------------------------------------------
-# Config: menu entries (label, module_name)
-# ----------------------------------------------------------
-APPS = [
-    ("Smiley",            "happy"),
-    ("Flappy Bird",       "flappybird"),
-    ("Tetris",            "tetris"),
-    ("Pet",               "pet"),
-    ("Message",           "message"),
-    ("Clock",             "clock"),
-    ("LED",               "light"),
-    ("Logo",              "logo"),
-    ("Robot Control",     "robot"),
-]
+import time, sys, gc, os
 
 # ----------------------------------------------------------
 # Globals used by callbacks + main loop
@@ -32,13 +17,42 @@ _current_index = 0
 
 _run_requested = False
 _run_module = None
+_exit_requested = False
+
+APPS = []
+
+EXCLUDED_FILES = {
+    "boot.py",
+    "main.py",
+    "main_menu.py",
+    "simple_esp.py",
+    "sh1106.py",
+}
+
+def discover_programs():
+    items = []
+    for name in os.listdir():        # root of ESP32 filesystem
+        if not name.endswith(".py"):
+            continue
+        if name in EXCLUDED_FILES:
+            continue
+
+        label = name[:-3]           # strip ".py"
+        items.append((label, label))
+
+    items.sort(key=lambda x: x[0].lower() if isinstance(x, tuple) else x.lower())
+    # Add an Exit option at the end
+    items.append(("Exit", "EXIT"))
+    return items
 
 # ----------------------------------------------------------
 # Drawing helpers
 # ----------------------------------------------------------
 def _draw_menu():
+    global APPS
     """Draw the list with the current selection highlighted."""
     global _display, _current_index
+    APPS = discover_programs()
     labels = [label for (label, _mod) in APPS]
     # display_lines(lines, highlight=index) already exists in SmallDisplay
     _display.display_lines(labels, highlight=_current_index)
@@ -55,11 +69,16 @@ def _on_click():
 
 def _on_long_click():
     """Long click: request running the currently highlighted app."""
-    global _run_requested, _run_module
+    global _run_requested, _run_module, _exit_requested
     label, module_name = APPS[_current_index]
-    _run_requested = True
-    _run_module = module_name
-    _display.display_message(["Running:", label], delay_ms=400)
+    if module_name == "EXIT":
+        # Request to exit the menu
+        _exit_requested = True
+        _display.display_message(["Exiting menu"], delay_ms=400)
+    else:    
+        _run_requested = True
+        _run_module = module_name
+        _display.display_message(["Running:", label], delay_ms=400)
 
 # ----------------------------------------------------------
 # Dynamic app loader
@@ -102,17 +121,15 @@ def _run_app(module_name):
     gc.collect()
 
 def _main_loop():
-    global _run_requested, _run_module
+    global _run_requested, _run_module, _exit_requested
     _run_requested = False
     _run_module = None
-    while True:
+    while not _exit_requested:
         if _run_requested and _run_module:
             module_name = _run_module
             _run_requested = False
             _run_module = None
-
             _run_app(module_name)
-
             # When the app returns, redraw menu
             _draw_menu()
 
@@ -139,6 +156,8 @@ def main():
     _display.display_message(["ESP32 Menu", "Click=move", "Long click=run"], delay_ms=2000)
     _draw_menu()
     _main_loop()
+    _display.fill(0)
+    _display.show()
 
 # Run menu on boot
 if __name__ == "__main__":

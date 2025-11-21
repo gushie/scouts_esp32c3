@@ -374,11 +374,6 @@ class Keyboard:
 
     Character layout (4 rows, all visible):
 
-        "+- ABCDEFGH"
-        "IJKLMNOPQRS"
-        "TUVWXYZ.'?!"
-        "0123456789@"
-
     Controls via Input:
 
       - single click:
@@ -386,20 +381,22 @@ class Keyboard:
           of the next line (and wrap from last row back to row 0)
 
       - double-click:
-          move down one row, keeping column if possible
+          move down one row, keeping column if possible; when wrapping back
+          to row 0, column is forced to 0 (start)
 
       - long click:
           '+' : ENTER -> calls on_enter(text) and restores previous Input handlers
           '-' : delete last character (backspace)
+          '^' : SHIFT -> toggles shift state (upper/lower + special chars), no text change
           other char: append to text (up to max_len) and call on_change(text)
 
     Display layout (72x40 window):
 
       y=0  : current text (last 14 chars)
-      y=8  : row 0 "+- ABCDEFGH"
-      y=16 : row 1 "IJKLMNOPQRS"
-      y=24 : row 2 "TUVWXYZ.'?!"
-      y=32 : row 3 "0123456789@"
+      y=8  : row 0
+      y=16 : row 1
+      y=24 : row 2
+      y=32 : row 3
     """
 
     def __init__(self, button_input, display=None, max_len=14):
@@ -407,12 +404,23 @@ class Keyboard:
         self.display = display          # SmallDisplay instance (optional)
         self.max_len = max_len
 
-        self.rows = [
-            "+- ABCDEFGH",
-            "IJKLMNOPQRS",
-            "TUVWXYZ.'?!",
-            "0123456789@",
+        # Unshifted (uppercase + some punctuation, trailing spaces)
+        self.rows_unshift = [
+            "+-^ ABCD01234'",  
+            "EFGHIJKL56789?",  
+            "MNOPQRS.#()+-/",
+            "TUVWXYZ!%<>=*^",  
         ]
+
+        # Shifted (lowercase + extra special characters filling the right side)
+        self.rows_shift = [
+            "+-^ abcd&:;,",  
+            "efghijkl$[]|",  
+            "mnopqrs~{}\"",
+            "tuvwxyz@_`\\",  
+        ]
+
+        self.shift = False  # start unshifted
 
         self.row = 0
         self.col = 0
@@ -429,39 +437,51 @@ class Keyboard:
         self.active = True
 
         self._init_handlers()
-
         self._refresh()
+
+    # ---- rows helper ----
+
+    def _rows(self):
+        return self.rows_shift if self.shift else self.rows_unshift
 
     # ---- Input event handlers ----
 
     def _on_click(self):
         if not self.active:
             return
+        rows = self._rows()
+        row_str = rows[self.row]
+
         # Next character; wrap to next row at end of current row
-        row_str = self.rows[self.row]
         self.col += 1
         if self.col >= len(row_str):
-            self.row = (self.row + 1) % len(self.rows)
+            self.row = (self.row + 1) % len(rows)
             self.col = 0
         self._refresh()
 
     def _on_double_click(self):
         if not self.active:
             return
+        rows = self._rows()
+
         # Move down one row, keep column if possible
-        self.row = (self.row + 1) % len(self.rows)
-        row_str = self.rows[self.row]
+        self.row = (self.row + 1) % len(rows)
+        row_str = rows[self.row]
         if self.col >= len(row_str):
             self.col = len(row_str) - 1
+
+        # When wrapping back to row 0, start at first column
         if self.row == 0:
             self.col = 0
+
         self._refresh()
 
     def _on_long_click(self):
         if not self.active:
             return
 
-        ch = self.rows[self.row][self.col]
+        rows = self._rows()
+        ch = rows[self.row][self.col]
 
         if ch == "+":  # ENTER
             if self.on_enter:
@@ -477,14 +497,20 @@ class Keyboard:
                 if self.on_change:
                     self.on_change(self.text)
 
+        elif ch == "^":  # SHIFT
+            # Toggle shift: case + special chars
+            self.shift = not self.shift
+
         else:
             # Normal character input
             if len(self.text) < self.max_len:
                 self.text += ch
                 if self.on_change:
                     self.on_change(self.text)
-        self.row=0
-        self.col=0
+
+        # After any selection, reset cursor to top-left
+        self.row = 0
+        self.col = 0
         self._refresh()
 
     def _init_handlers(self):
@@ -514,8 +540,10 @@ class Keyboard:
         show_text = self.text[-14:]
         d.small_text(show_text, 0, 0)
 
+        rows = self._rows()
+
         # Four rows of characters
-        for r, row_str in enumerate(self.rows):
+        for r, row_str in enumerate(rows):
             y = 8 + r * 8
             d.small_text(row_str, 0, y)
             if r == self.row:
@@ -532,10 +560,10 @@ class Keyboard:
         self.text = text[:self.max_len]
         self.row = 0
         self.col = 0
+        self.shift = False
         self.active = True
         self._init_handlers()
         self._refresh()
-
 
 # ---------------------------------------------------------------------------
 # Input — single-button with click/double/long; uses Timer(0)

@@ -9,11 +9,8 @@
 import time
 import urequests as requests
 import ujson
-from simple_esp import SmallDisplay, connect_wifi
-
-# ---------- CONFIG ----------
-WIFI_SSID = "scouts"
-WIFI_PASS = "greatbarton"
+from simple_esp import SmallDisplay
+import wifi
 
 # Your location (Bury St Edmunds approx shown here — change if you like)
 CITY = "BURY ST ED"
@@ -114,23 +111,16 @@ def main():
     except:
         pass
 
-    show_status(d, "JOIN WIFI")
-    wlan = connect_wifi(WIFI_SSID, WIFI_PASS)
-    if not wlan or not wlan.isconnected():
-        show_status(d, "WIFI FAIL")
-        while True:
-            time.sleep(10)
-            wlan = connect_wifi(WIFI_SSID, WIFI_PASS)
-            if wlan and wlan.isconnected():
-                break
+    show_status(d, "JOINING WIFI")
+    ok = wifi.run_connect_saved()
+    if not ok:
+        show_status(d, "WIFI FAILED")
+        return
 
     show_status(d, "GET WEATHER")
 
-    while True:
-        t, wind, code, wind_dir = fetch_weather(LAT, LON)
-        show_weather(d, CITY, t, wind, code, wind_dir)
-        for _ in range(REFRESH_SEC // 5):
-            time.sleep(5)
+    t, wind, code, wind_dir = fetch_weather(LAT, LON)
+    show_weather(d, CITY, t, wind, code, wind_dir)
 
 if __name__ == "__main__":
     main()
