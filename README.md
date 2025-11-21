@@ -85,6 +85,8 @@ Don’t worry about breaking anything — you can always redownload the files or
 - robot driving  
 - Wi-Fi connection  
 
+It is intended to hide the more complicated programming, to give easier to use functions for the Scouts to program with.
+
 See [SIMPLE_ESP](SIMPLE_ESP.md) documentation.
 
 See the Robot folder for a simple robot that can be built with continuous servos.
