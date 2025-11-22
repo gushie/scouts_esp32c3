@@ -165,7 +165,7 @@ def draw_game_screen():
 
     # Bottom: current action
     if not pet["alive"]:
-        display.small_text("Double click", 0, 32)
+        display.small_text("Hold click", 0, 32)
     else:
         act = ACTIONS[current_action]
         display.small_text("Action: {}".format(act[:7]), 0, 32)
@@ -177,8 +177,8 @@ def show_help_screen():
     display.fill(0)
     display.small_text("Tami Pet", 0, 0)
     display.small_text("Click  : Next", 0, 8)
-    display.small_text("Hold   : Do", 0, 16)
-    display.small_text("Double : Info", 0, 24)
+    display.small_text("Double : Do", 0, 16)
+    display.small_text("Hold   : Info", 0, 24)
     display.small_text("Click to start", 0, 32)
     display.show()
 
@@ -228,7 +228,6 @@ def tick_pet():
 
     draw_game_screen()
 
-
 # ---- Button handlers ----
 
 def on_click():
@@ -242,8 +241,8 @@ def on_click():
     current_action = (current_action + 1) % len(ACTIONS)
     draw_game_screen()
 
-def on_long():
-    """Long click: perform current action."""
+def on_double():
+    """Double click: perform current action."""
     if show_help:
         # ignore long presses while help is shown
         return
@@ -273,8 +272,8 @@ def on_long():
 
     draw_game_screen()
 
-def on_double():
-    """Double click: show status, or revive if dead."""
+def on_long():
+    """Long click: show status, or revive if dead."""
     if show_help:
         # ignore double while help is showing
         return

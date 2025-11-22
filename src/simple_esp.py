@@ -59,6 +59,22 @@ def _ensure_i2c():
         _I2C = I2C
     return _I2C
 
+_json = None
+def _ensure_json():
+    global _json
+    if _json is None:
+        import ujson as json
+        _json = json
+    return _json
+
+_os = None
+def _ensure_os():
+    global _os
+    if _os is None:
+        import os
+        _os = os
+    return _os
+
 _FONT5X7 = None
 
 def _ensure_font():
@@ -142,6 +158,7 @@ class SmallDisplay:
         self.y_offset = 24
         self.width, self.height = 72, 40
         self.fill(0)
+        self._refresh_menu = False
 
     def new_i2c(self):
         I2C = _ensure_i2c()
@@ -262,6 +279,43 @@ class SmallDisplay:
             print(("> " if (highlight is not None and i == highlight) else "  ") + line)
             y += 8
         self.show()
+        
+    def menu(self, lines, btn):
+        current = 0
+        active = True
+        prev_click = btn.on_click
+        prev_dbl_click = btn.on_double_click
+        prev_long_click = btn.on_long_click
+        def on_click():
+            nonlocal current
+            current = (current + 1) % len(lines)
+            self.display_lines(lines, highlight=current)
+
+        def on_long_click():
+            nonlocal current
+            current = (current - 1) % len(lines)
+            self.display_lines(lines, highlight=current)
+
+        def on_double_click():
+            nonlocal active, btn
+            btn.on_click = prev_click
+            btn.on_double_click = prev_dbl_click
+            btn.on_long_click = prev_long_click
+            active = False
+            
+        btn.on_click = on_click
+        btn.on_double_click = on_double_click
+        btn.on_long_click = on_long_click
+        self.display_lines(lines, highlight=current)
+        while active:
+            if self._refresh_menu:
+                self.display_lines(lines, highlight=current)
+                self._refresh_menu = False
+            time.sleep_ms(50)
+        return current
+    
+    def refresh_menu(self):
+        self._refresh_menu = True
 
     def display_message(self, lines, delay_ms=1500):
         """Utility to show 1–3 centered lines."""
@@ -380,11 +434,11 @@ class Keyboard:
           move to next character; if at end of line, wrap to first character
           of the next line (and wrap from last row back to row 0)
 
-      - double-click:
+      - long click:
           move down one row, keeping column if possible; when wrapping back
           to row 0, column is forced to 0 (start)
 
-      - long click:
+      - double click:
           '+' : ENTER -> calls on_enter(text) and restores previous Input handlers
           '-' : delete last character (backspace)
           '^' : SHIFT -> toggles shift state (upper/lower + special chars), no text change
@@ -399,14 +453,14 @@ class Keyboard:
       y=32 : row 3
     """
 
-    def __init__(self, button_input, display=None, max_len=14):
+    def __init__(self, button_input, display=None, max_len=14, on_enter=None):
         self.input = button_input       # Input instance
         self.display = display          # SmallDisplay instance (optional)
         self.max_len = max_len
 
         # Unshifted (uppercase + some punctuation, trailing spaces)
         self.rows_unshift = [
-            "+-^ ABCD01234'",  
+            "^+- ABCD01234'",  
             "EFGHIJKL56789?",  
             "MNOPQRS.#()+-/",
             "TUVWXYZ!%<>=*^",  
@@ -414,30 +468,19 @@ class Keyboard:
 
         # Shifted (lowercase + extra special characters filling the right side)
         self.rows_shift = [
-            "+-^ abcd&:;,",  
+            "^+- abcd&:;,",  
             "efghijkl$[]|",  
             "mnopqrs~{}\"",
             "tuvwxyz@_`\\",  
         ]
 
         self.shift = False  # start unshifted
-
         self.row = 0
         self.col = 0
         self.text = ""
-
         self.on_change = None  # callback(text)
-        self.on_enter = None   # callback(text)
-
-        # Save previous button handlers so we can restore them on ENTER
-        self._prev_click = button_input.on_click
-        self._prev_double = button_input.on_double_click
-        self._prev_long = button_input.on_long_click
-
-        self.active = True
-
-        self._init_handlers()
-        self._refresh()
+        self.on_enter = on_enter   # callback(text)
+        self.active = False
 
     # ---- rows helper ----
 
@@ -459,7 +502,7 @@ class Keyboard:
             self.col = 0
         self._refresh()
 
-    def _on_double_click(self):
+    def _on_long_click(self):
         if not self.active:
             return
         rows = self._rows()
@@ -476,14 +519,14 @@ class Keyboard:
 
         self._refresh()
 
-    def _on_long_click(self):
+    def _on_double_click(self):
         if not self.active:
             return
 
         rows = self._rows()
         ch = rows[self.row][self.col]
 
-        if ch == "+":  # ENTER
+        if ch == "+" and self.row == 0:  # ENTER
             if self.on_enter:
                 self.on_enter(self.text)
             self._restore_handlers()
@@ -491,13 +534,13 @@ class Keyboard:
             self.active = False
             self.text = ""
 
-        elif ch == "-":  # backspace
+        elif ch == "-" and self.row == 0:  # backspace
             if self.text:
                 self.text = self.text[:-1]
                 if self.on_change:
                     self.on_change(self.text)
 
-        elif ch == "^":  # SHIFT
+        elif ch == "^" and self.row == 0:  # SHIFT
             # Toggle shift: case + special chars
             self.shift = not self.shift
 
@@ -514,7 +557,11 @@ class Keyboard:
         self._refresh()
 
     def _init_handlers(self):
-        # Hook into the Input callbacks
+        # Save previous button handlers so we can restore them on ENTER
+        self._prev_click = self.input.on_click
+        self._prev_double = self.input.on_double_click
+        self._prev_long = self.input.on_long_click
+        # Hook into the Input callbacks	
         self.input.on_click = self._on_click
         self.input.on_double_click = self._on_double_click
         self.input.on_long_click = self._on_long_click
@@ -555,7 +602,7 @@ class Keyboard:
 
     # ---- Utility ----
 
-    def reset(self, text=""):
+    def open(self, text=""):
         """Reset the keyboard text and position, stay active."""
         self.text = text[:self.max_len]
         self.row = 0
@@ -583,6 +630,7 @@ class Input:
         self._click_pending = False
         self._timer = None  # Timer(0) allocated on first use
 
+        self.on_press = None   # fires immediately when button goes low, no debouncing or waiting for long click detection
         self.on_click = None
         self.on_double_click = None
         self.on_long_click = None
@@ -599,6 +647,9 @@ class Input:
             self._last_irq = now
             self._pressed = True
             self._down_ms = now
+            if self.on_press:
+                self._schedule(self._fire, 'press')
+
             if self._click_pending:
                 self._cancel_timer()
                 self._click_pending = False
@@ -641,7 +692,8 @@ class Input:
             fn(arg)
 
     def _fire(self, kind):
-        if kind == 'click' and self.on_click: self.on_click()
+        if kind == 'press' and self.on_press: self.on_press()
+        elif kind == 'click' and self.on_click: self.on_click()
         elif kind == 'double' and self.on_double_click: self.on_double_click()
         elif kind == 'long' and self.on_long_click: self.on_long_click()
 
@@ -1094,7 +1146,13 @@ class Servo:
 # ---------------------------------------------------------------------------
 # Wi-Fi helper (lazy import; minimal)
 # ---------------------------------------------------------------------------
-def connect_wifi(ssid="scouts", password="greatbarton", timeout=10):
+def connect_wifi(ssid=None, password=None, timeout=10):
+    reg = Registry()
+    if ssid is None:
+        ssid = reg.get('wifi.ssid')
+        password = reg.get('wifi.password')
+    if ssid is None:
+        return
     network = _ensure_network()
     ntptime = _ensure_ntptime()
     wlan = network.WLAN(network.STA_IF)
@@ -1115,3 +1173,86 @@ def connect_wifi(ssid="scouts", password="greatbarton", timeout=10):
         return wlan
     print("Failed to connect."); 
     return None
+
+class Registry:
+    """
+    Tiny key→value store saved in a JSON file.
+
+    - Stores a Python dict like: {"flappy.best": 12, "wifi.ssid": "MyNet"}
+    - Values should be simple types: int, float, bool, str, list, dict.
+    - Data is saved immediately when set() is called.
+    """
+
+    def __init__(self, filename="registry.json"):
+        self.filename = filename
+        self._data = None  # will be loaded on first use
+
+    # -------- internal helpers --------
+    def _ensure_loaded(self):
+        """Load registry file into memory if not already loaded."""
+        if self._data is not None:
+            return
+
+        # Default to empty dict if file missing or broken
+        json = _ensure_json()
+        self._data = {}
+        try:
+            with open(self.filename, "r") as f:
+                raw = f.read()
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                self._data = obj
+        except:
+            # File not found or JSON error -> keep empty dict
+            self._data = {}
+
+    def _save(self):
+        """Write current data to flash as JSON."""
+        if self._data is None:
+            return
+
+        # Write to a temp file then rename (safer if power cuts out)
+        os = _ensure_os()
+        json = _ensure_json()
+        tmp_name = self.filename + ".tmp"
+        try:
+            with open(tmp_name, "w") as f:
+                f.write(json.dumps(self._data))
+
+            try:
+                os.remove(self.filename)
+            except:
+                pass
+            os.rename(tmp_name, self.filename)
+        except:
+            # If anything goes wrong, just ignore (no crash in games)
+            pass
+
+    # -------- public API --------
+    def get(self, key, default=None):
+        """
+        Read a value from the registry.
+        Example: REGISTRY.get("flappy.best", 0)
+        """
+        self._ensure_loaded()
+        return self._data.get(key, default)
+
+    def set(self, key, value):
+        """
+        Save a value to the registry.
+        Example: REGISTRY.set("flappy.best", 10)
+        """
+        self._ensure_loaded()
+        self._data[key] = value
+        self._save()
+
+    def delete(self, key):
+        """
+        Remove a key from the registry (if it exists).
+        """
+        self._ensure_loaded()
+        if key in self._data:
+            del self._data[key]
+            self._save()
+
+

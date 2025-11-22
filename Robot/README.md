@@ -8,7 +8,6 @@ The robot is programmed entirely in **MicroPython** using the `Robot` class from
 
 ---
 
-
 # 1. 🧰 What You Need
 
 ![Robot Parts](robot_parts.jpg)
@@ -17,8 +16,8 @@ The robot is programmed entirely in **MicroPython** using the `Robot` class from
 - **ESP32-C3 board** with soldered header pins
 - **Two SG90 continuous-rotation 9g micro servos**
 - **Mini breadboard**
-- Dupont Jumper wires (male->male & male->female)
-- USB-C cable for programming
+- **Dupont Jumper wires** (male->male & male->female)
+- **USB-C cable** for programming and power
 
 These can all be cheaply purchased from Aliexpress.
 
@@ -27,9 +26,10 @@ You can use **any** of these:
 
 - **3D-printed chassis + wheels**  
 - OR **stiff cardboard chassis** (prototype)  
-- A paperclip (for the front skid/caster)
-- Sellotape / hot glue 
-- Wheels (3D printed, Lego, cardboard circles, etc.)
+- A **paperclip** for the front skid/caster
+- **Sellotape / hot glue**
+- **Wheels** (3D printed, Lego, cardboard circles, etc.)
+- **Elastic bands** to keep wires tidy or extra grip on wheels
 
 ### Software
 - **Thonny IDE** (https://thonny.org/)  

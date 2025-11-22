@@ -13,13 +13,7 @@ import time, sys, gc, os
 # Globals used by callbacks + main loop
 # ----------------------------------------------------------
 _display = None
-_current_index = 0
-
-_run_requested = False
-_run_module = None
-_exit_requested = False
-
-APPS = []
+_btn = None
 
 EXCLUDED_FILES = {
     "boot.py",
@@ -38,48 +32,21 @@ def discover_programs():
             continue
 
         label = name[:-3]           # strip ".py"
-        items.append((label, label))
+        items.append(label)
 
     items.sort(key=lambda x: x[0].lower() if isinstance(x, tuple) else x.lower())
     # Add an Exit option at the end
-    items.append(("Exit", "EXIT"))
+    items.insert(0, "Exit")
     return items
 
 # ----------------------------------------------------------
 # Drawing helpers
 # ----------------------------------------------------------
 def _draw_menu():
-    global APPS
     """Draw the list with the current selection highlighted."""
-    global _display, _current_index
-    APPS = discover_programs()
-    labels = [label for (label, _mod) in APPS]
-    # display_lines(lines, highlight=index) already exists in SmallDisplay
-    _display.display_lines(labels, highlight=_current_index)
-
-
-# ----------------------------------------------------------
-# Button handlers
-# ----------------------------------------------------------
-def _on_click():
-    """Short click: move to next app."""
-    global _current_index
-    _current_index = (_current_index + 1) % len(APPS)
-    _draw_menu()
-
-def _on_long_click():
-    """Long click: request running the currently highlighted app."""
-    global _run_requested, _run_module, _exit_requested
-    label, module_name = APPS[_current_index]
-    if module_name == "EXIT":
-        # Request to exit the menu
-        _exit_requested = True
-        _display.display_message(["Exiting menu"], delay_ms=400)
-    else:    
-        _run_requested = True
-        _run_module = module_name
-        _display.display_message(["Running:", label], delay_ms=400)
-
+    apps = discover_programs()
+    current_index = _display.menu(apps, _btn)
+    return apps[current_index]
 # ----------------------------------------------------------
 # Dynamic app loader
 # ----------------------------------------------------------
@@ -121,41 +88,28 @@ def _run_app(module_name):
     gc.collect()
 
 def _main_loop():
-    global _run_requested, _run_module, _exit_requested
-    _run_requested = False
-    _run_module = None
-    while not _exit_requested:
-        if _run_requested and _run_module:
-            module_name = _run_module
-            _run_requested = False
-            _run_module = None
+    module_name = None
+    while module_name != "Exit":
+        module_name = _draw_menu()
+        if module_name != "Exit":
+            _display.display_message(["Running:", module_name], delay_ms=400)
             _run_app(module_name)
-            # When the app returns, redraw menu
-            _draw_menu()
-
-        # small sleep so we’re not busy-looping
-        time.sleep_ms(50)
-
+            
 
 # ----------------------------------------------------------
 # Main menu
 # ----------------------------------------------------------
 def main():
-    global _display, _current_index
+    global _display, _btn
 
     _display = SmallDisplay()
+    _display.hard_reset()
+    _btn = Input(pin_no=9)
 
-    # Set up the single-button Input (pin 9, active low by default)
-    btn = Input(pin_no=9)
-    btn.on_click = _on_click
-    btn.on_long_click = _on_long_click
-    # We’re not using double-click here, so leave btn.on_double_click as None
-
-    _current_index = 0
     _run_app('logo')
-    _display.display_message(["ESP32 Menu", "Click=move", "Long click=run"], delay_ms=2000)
-    _draw_menu()
+    _display.display_message(["ESP32 Menu", "Click=move", "Hold=move up", "Dbl click=run"], delay_ms=2000)
     _main_loop()
+    _display.display_message(["Exiting menu"], delay_ms=400)
     _display.fill(0)
     _display.show()
 

@@ -17,145 +17,50 @@
 #   - Attempts to connect
 #   - Exits, leaving Wi-Fi connected
 
-from simple_esp import SmallDisplay, Input, Keyboard
+from simple_esp import SmallDisplay, Input, Keyboard, Registry, connect_wifi
 import network
 import time
 import os
 
 # ---- Constants ----
 
-WIFI_FILE = "wifi.txt"
 BTN_PIN = 9
 
 MENU_OPTIONS = ["Connect saved", "Connect new"]
-
 
 # ---- Hardware ----
 
 display = SmallDisplay()
 button = Input(BTN_PIN)
-
-
+registry = Registry()
 # ---- Helpers: file I/O ----
 
 def load_saved_wifi():
-    """Return (ssid, password) from wifi.txt, or (None, None) if missing/invalid."""
-    try:
-        if WIFI_FILE not in os.listdir():
-            return None, None
-    except:
-        # No filesystem or error
-        return None, None
-
-    try:
-        with open(WIFI_FILE, "r") as f:
-            line = f.readline().rstrip("\n")
-    except:
-        return None, None
-
-    if not line:
-        return None, None
-
-    # format: SSID \t PASSWORD
-    parts = line.split("\t", 1)
-    if len(parts) != 2:
-        return None, None
-    ssid, pw = parts[0], parts[1]
-    if not ssid:
-        return None, None
-    return ssid, pw
+    """Return (ssid, password) from registry.json, or (None, None) if missing/invalid."""
+    global registry
+    ssid = registry.get('wifi.ssid')
+    password = registry.get('wifi.password')
+    return ssid, password
 
 
 def save_wifi(ssid, password):
-    """Save (ssid, password) to wifi.txt."""
-    try:
-        with open(WIFI_FILE, "w") as f:
-            f.write(ssid + "\t" + password + "\n")
-    except:
-        # Simple ignore on error; user will see connect fail anyway
-        pass
-
-
-# ---- Helpers: Wi-Fi connect ----
-
-def connect_wifi(ssid, password, timeout=15):
-    """Try to connect to given Wi-Fi. Returns True on success."""
-    sta = network.WLAN(network.STA_IF)
-    sta.active(True)
-
-    # If already connected to this SSID, just keep it
-    if sta.isconnected():
-        try:
-            cfg = sta.config("essid")
-        except:
-            cfg = None
-        if isinstance(cfg, bytes):
-            cfg = cfg.decode()
-
-        if cfg == ssid:
-            return True
-
-    sta.disconnect()
-    display.notify("Connecting...", ms=500)
-
-    sta.connect(ssid, password)
-
-    t0 = time.ticks_ms()
-    while not sta.isconnected():
-        if time.ticks_diff(time.ticks_ms(), t0) > timeout * 1000:
-            break
-        time.sleep_ms(200)
-
-    if sta.isconnected():
-        ip = sta.ifconfig()[0]
-        display.notify("OK " + ip, ms=1500)
-        return True
-    else:
-        display.notify("Failed", ms=1500)
-        return False
-
+    """Save (ssid, password) to registry.json."""
+    global registry
+    registry.set('wifi.ssid', ssid)
+    registry.set('wifi.password', password)
 
 # ---- Mode 1: menu selection ----
 
-_menu_choice = 0
-_menu_done = False
-
-def _draw_menu():
-    display.display_lines(MENU_OPTIONS, highlight=_menu_choice)
-
-def _menu_click():
-    global _menu_choice
-    _menu_choice = (_menu_choice + 1) % len(MENU_OPTIONS)
-    _draw_menu()
-
-def _menu_long():
-    global _menu_done
-    _menu_done = True
-
 def choose_menu_option():
     """Show menu and return chosen index (0 or 1)."""
-    global _menu_choice, _menu_done
-    _menu_choice = 0
-    _menu_done = False
-
-    button.on_click = _menu_click
-    button.on_double_click = None
-    button.on_long_click = _menu_long
-
     display.fill(0)
     display.small_text("WiFi setup", 0, 0)
     display.small_text("Click: next", 0, 8)
-    display.small_text("Hold: select", 0, 16)
+    display.small_text("Dbl clk: select", 0, 16)
     display.show()
     time.sleep_ms(1200)
 
-    _draw_menu()
-
-    while not _menu_done:
-        time.sleep_ms(50)
-
-    return _menu_choice
-
+    return display.menu(MENU_OPTIONS, button)
 
 # ---- Mode 2: connect to saved Wi-Fi ----
 
@@ -169,39 +74,10 @@ def run_connect_saved():
     ok = connect_wifi(ssid, pw)
     return ok
 
-
 # ---- Mode 3: scan, choose SSID, enter password ----
-
-_ssid_list = []
-_ssid_idx = 0
-_ssid_done = False
-_ssid_selected = None
-
-def _draw_ssid_list():
-    if not _ssid_list:
-        display.notify("No networks", ms=1500)
-        return
-    display.display_lines(_ssid_list, highlight=_ssid_idx)
-
-def _ssid_click():
-    global _ssid_idx
-    if not _ssid_list:
-        return
-    _ssid_idx = (_ssid_idx + 1) % len(_ssid_list)
-    _draw_ssid_list()
-
-def _ssid_long():
-    global _ssid_done, _ssid_selected
-    if not _ssid_list:
-        _ssid_done = True
-        _ssid_selected = None
-        return
-    _ssid_selected = _ssid_list[_ssid_idx]
-    _ssid_done = True
 
 def choose_ssid():
     """Scan for networks, let user choose one, return SSID or None."""
-    global _ssid_list, _ssid_idx, _ssid_done, _ssid_selected
 
     display.notify("Scanning...", ms=800)
 
@@ -232,26 +108,12 @@ def choose_ssid():
         names.append(name)
 
     names.sort()
-    _ssid_list = names
-    _ssid_idx = 0
-    _ssid_done = False
-    _ssid_selected = None
 
-    button.on_click = _ssid_click
-    button.on_double_click = None
-    button.on_long_click = _ssid_long
-
-    if not _ssid_list:
+    if not names:
         display.notify("No networks", ms=1500)
         return None
 
-    display.notify("Click/hold", ms=800)
-    _draw_ssid_list()
-
-    while not _ssid_done:
-        time.sleep_ms(50)
-
-    return _ssid_selected
+    return names[display.menu(names, button)]
 
 
 def enter_password_for(ssid):
@@ -270,8 +132,8 @@ def enter_password_for(ssid):
     display.show()
     time.sleep_ms(800)
 
-    kb = Keyboard(button, display, max_len=32)
-    kb.on_enter = on_enter
+    kb = Keyboard(button, display, max_len=32, on_enter=on_enter)
+    kb.open()
 
     while not pwd_holder["done"]:
         time.sleep_ms(50)
@@ -310,8 +172,7 @@ def main():
 
     # Exit; leave Wi-Fi in whatever state it ended up in
     display.notify("Done", ms=800)
-    import main_menu
-    main_menu.main()
+
 
 if __name__ == "__main__":
     main()

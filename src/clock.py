@@ -3,10 +3,8 @@ from machine import RTC
 from simple_esp import SmallDisplay, connect_wifi
 import time, math
 
-
 oled = SmallDisplay()  # 72x40 window mapped for your panel
 rtc  = RTC()
-
 
 # ---- Clock layout (fits 72x40) ----
 W, H = oled.width, oled.height          # 72 x 40
@@ -53,7 +51,7 @@ def draw_hands(h, m, s):
     oled.fill_rect(CX-1, CY-1, 3, 3, 1)
 
 def main():
-#    wlan = connect_wifi()   
+    wlan = connect_wifi()   
     last_drawn_sec = -1
     while True:
         # Get time from RTC
@@ -68,8 +66,6 @@ def main():
             last_drawn_sec = ss
 
         time.sleep(0.05)
-
-
 
 # try_ntp()   # uncomment if Wi-Fi is up and you want auto time sync
 if __name__ == "__main__":

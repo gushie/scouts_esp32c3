@@ -82,8 +82,11 @@ Center horizontally.
 Clear → show → delay → return.
 
 ### `display_lines(lines, highlight=None)`  
-5-line menu with optional highlight cursor.
+Display up to 5 lines with optional highlight cursor.
 
+### `menu(lines, btn)`
+Display a menu, user can change with click, select with double-click. 
+Returns the index of the selected item
 ---
 
 ## ASCII Art Renderer
@@ -101,8 +104,13 @@ import time
 
 btn = Input(pin_no=9)
 
+# Click will only activate if a double click or long press isn't detected
 def click():
     print("CLICK")
+
+# Press will always activate when the button is pressed, even if it is a double click or long press
+def press():
+    print("PRESS")
 
 def dbl():
     print("DOUBLE")
@@ -110,9 +118,11 @@ def dbl():
 def lng():
     print("LONG")
 
+
 btn.on_click = click
 btn.on_double_click = dbl
 btn.on_long_click = lng
+btn.on_press = press
 
 while True:
     time.sleep(0.1)
@@ -128,6 +138,7 @@ Interrupt-driven, uses **Timer(0)** for double-click detection.
 - `on_click`
 - `on_double_click`
 - `on_long_click`
+- `on_press`
 
 ---
 
@@ -137,12 +148,11 @@ Works with `SmallDisplay` + `Input`.
 
 ### Example
 ```python
-kbd = Keyboard(btn, display=d)
 
 def on_enter(text):
     print("Entered:", text)
-
-kbd.on_enter = on_enter
+kbd = Keyboard(btn, display=d, on_enter = on_enter)
+kbd.open()
 ```
 
 ### Special Keys
@@ -154,8 +164,8 @@ kbd.on_enter = on_enter
 
 ### Actions
 - Click → next character  
-- Double click → next row  
-- Long click → select/enter/backspace/shift  
+- Long click → next row  
+- Double click → select/enter/backspace/shift  
 
 ---
 
@@ -255,6 +265,30 @@ if wlan:
 ### `connect_wifi(ssid="scouts", password="greatbarton", timeout=10)`
 Connects with auto RTC time sync.
 
+Sending with no arguments will connect with the info saved in the registry via wifi.py
 ---
 
-# End of Documentation
+
+# 8. Registry
+
+## Example
+```python
+from simple_esp import Registry
+
+reg = Registry('registry.json')
+reg.set('wifi.ssid', 'greatbarton')
+ssid = reg.get('wifi.ssid', 'default_value')
+reg.delete('wifi.ssid')
+```
+
+## Function
+### `get(key, default_value)`
+Returns a value from the json file for the key. If not present will return the default_value, or None
+### `set(key, value)`
+Sets the value for a particular key
+### `delete(key)`
+Deletes the value for the key
+
+If no file name is passed into the Registry() class, it will default to 'registry.json'.
+This is a file stored in the root folder of the esp32-c3
+---

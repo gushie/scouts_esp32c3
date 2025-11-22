@@ -9,8 +9,7 @@
 import time
 import urequests as requests
 import ujson
-from simple_esp import SmallDisplay
-import wifi
+from simple_esp import SmallDisplay, connect_wifi
 
 # Your location (Bury St Edmunds approx shown here — change if you like)
 CITY = "BURY ST ED"
@@ -112,7 +111,7 @@ def main():
         pass
 
     show_status(d, "JOINING WIFI")
-    ok = wifi.run_connect_saved()
+    ok = connect_wifi()
     if not ok:
         show_status(d, "WIFI FAILED")
         return

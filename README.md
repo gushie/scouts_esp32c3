@@ -57,6 +57,15 @@ Whenever the ESP32-C3 powers on, **main.py runs automatically**, so it can be us
 - from a USB powerbank  
   *(note: some powerbanks may turn off due to low power draw)*
 
+If you don't want the menu to run each time, edit the main.py file and delete the contents.
+
+After you've copied the files and rebooted the device, you may find you no longer see the device files in Thonny. To resolve this
+1. Choose the Exit option on the device menu
+2. Click the Stop button in Thonny
+
+If still not seeing them, go to the bottom right of Thonny, click MicroPython (ESP32) and choose MicroPython (ESP32) from the menu.
+
+See [APPS](APPS.md) for a brief summary of the apps.
 ---
 
 ## Start tweaking the programs!
@@ -83,7 +92,8 @@ Don’t worry about breaking anything — you can always redownload the files or
 - ASCII‑art rendering  
 - servos  
 - robot driving  
-- Wi-Fi connection  
+- Wi-Fi connection
+- Saving information  
 
 See [SIMPLE_ESP](SIMPLE_ESP.md) documentation.
 
