@@ -1,4 +1,4 @@
-# Provided apps
+# Provided apps in the Python Code folder
 ## Clock
 Displays an analogue clock. Requires a wifi connection to get the correct time
 

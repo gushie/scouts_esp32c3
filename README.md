@@ -45,7 +45,7 @@ Download this repository via the green **Code** button above this, and then → 
 In Thonny:
 
 1. Enable the **Files** panel from *View*.  
-2. Browse to the `src` folder and right‑click each `.py` file → **Upload to /**.  
+2. Browse to the `Python Code` folder (was src) and right‑click each `.py` file → **Upload to /**.  
 3. Double‑click files on the device to edit them.  
 4. To save changes back to your PC, right‑click → **Download to…**.
 

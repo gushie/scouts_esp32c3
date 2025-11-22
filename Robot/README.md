@@ -34,7 +34,7 @@ You can use **any** of these:
 ### Software
 - **Thonny IDE** (https://thonny.org/)  
 - MicroPython installed on the ESP32-C3  
-- Files from the src folder of this project uploaded to the board (`simple_esp.py`, etc.)
+- Files from the Python Code folder of this project uploaded to the board (`simple_esp.py`, etc.)
 
 ---
 
