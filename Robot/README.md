@@ -172,7 +172,15 @@ Scouts had to tweak their Python code to navigate the course.
 
 ---
 
-# 7. 🏁 Summary
+# 7. Remote controlling the Robot
+
+When starting the robot app, it prompts for Bluetooth, Browser or None
+Bluetooth allows the app to be controlled via the robot_control.py over BLE bluetooth
+
+Browser allows the robot to be controlled over the web. The esp32-c3 will need to be configured to use Wifi via the wifi.py app first. The esp32-c3 will display an ip address similar to 192.168.1.123, depending on the configuration of your home wifi. Enter this address in a web browser on the same wifi network, and the bot can be controlled.
+
+---
+# 8. 🏁 Summary
 
 By completing this project, Scouts learn:
 

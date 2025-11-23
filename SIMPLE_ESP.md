@@ -15,7 +15,7 @@ Includes:
 
 ---
 
-# 1. SmallDisplay (72×40 SH1106 Window)
+# 1. SmallDisplay (72×40 SH1106 Window) - Draw or write on the display
 
 ## Example
 ```python
@@ -197,7 +197,7 @@ while True:
 
 ---
 
-# 5. Servo
+# 5. Servo - Control continuous or positional servos
 
 ## Example
 ```python
@@ -249,7 +249,7 @@ bot.stop()
 
 ---
 
-# 7. Wi-Fi Helper
+# 7. connect_wifi - Connect to the Wifi
 
 ## Example
 ```python
@@ -269,7 +269,7 @@ Sending with no arguments will connect with the info saved in the registry via w
 ---
 
 
-# 8. Registry
+# 8. Registry - Store/Retrieve data
 
 ## Example
 ```python
@@ -292,3 +292,23 @@ Deletes the value for the key
 If no file name is passed into the Registry() class, it will default to 'registry.json'.
 This is a file stored in the root folder of the esp32-c3
 ---
+
+# 9. Http - Webserver
+```python
+from simple_esp import Http
+
+def on_request(urlparam):
+   if urlparam == "mypage":
+	return "<html><body>My page content</body></html>"
+   else:
+	return "<html><body>Page not found</body></html>"
+
+http = Http()
+http.start(on_request)
+```
+
+## Function 
+### `start(callback)`
+Starts the webserver. Any requests get passed to callback
+
+--

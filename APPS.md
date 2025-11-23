@@ -37,3 +37,5 @@ Display the current weather in Bury St Edmunds. Requires wifi connection
 
 ## Wifi
 Connect to the wifi. Will save the wifi connection details.
+To avoid having to type the password in the microcontroller, add your info to registry.json file on the device
+{"wifi.password": "your_password", "wifi.ssid": "your_ssid"}

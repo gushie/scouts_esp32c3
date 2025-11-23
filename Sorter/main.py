@@ -1,0 +1,3 @@
+import sorter
+
+sorter.main()

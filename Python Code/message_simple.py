@@ -18,17 +18,10 @@ PHRASES = [
     "I'm ready",
 ]
 
-current = 0          # index into PHRASES
 bus = Bluetooth()    # discovery-based; no MACs needed
 display = SmallDisplay()
 led = Pin(8, Pin.OUT)
 inp = Input(9)
-
-# DRAW: show menu (paging handled by display.display_lines)
-def draw_menu():
-    global current
-    # New display_lines knows how to page when given highlight index
-    display.display_lines(PHRASES, highlight=current)
 
 # BUTTON: double press = send preset message (index-based)
 def send_text(current):

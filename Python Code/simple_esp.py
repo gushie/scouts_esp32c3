@@ -75,6 +75,22 @@ def _ensure_os():
         _os = os
     return _os
 
+_socket = None
+def _ensure_socket():
+    global _socket
+    if _socket is None:
+        import socket
+        _socket = socket
+    return _socket
+
+__thread = None
+def _ensure_thread():
+    global __thread
+    if __thread is None:
+        import _thread
+        __thread = _thread
+    return _thread
+
 _FONT5X7 = None
 
 def _ensure_font():
@@ -1074,7 +1090,6 @@ class Robot:
         self.left_servo.stop()
         self.right_servo.stop()
 
-
 class Servo:
     """
     Simple servo helper for MicroPython (ESP32, etc.)
@@ -1152,11 +1167,14 @@ def connect_wifi(ssid=None, password=None, timeout=10):
         ssid = reg.get('wifi.ssid')
         password = reg.get('wifi.password')
     if ssid is None:
-        return
+        return None
     network = _ensure_network()
     ntptime = _ensure_ntptime()
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
+    try:
+        wlan = network.WLAN(network.STA_IF)
+        wlan.active(True)
+    except Exception:
+        return None
     if not wlan.isconnected():
         print("Connecting to", ssid, "…")
         wlan.connect(ssid, password)
@@ -1255,4 +1273,52 @@ class Registry:
             del self._data[key]
             self._save()
 
+
+class Http:
+    def _handle_client(self, cl, addr, callback):
+        try:
+            request = cl.recv(1024)
+            if not request:
+                return
+
+            # First line: e.g. b"GET /F HTTP/1.1\r\n..."
+            first_line = request.split(b"\r\n", 1)[0]
+            parts = first_line.split()
+            if len(parts) < 2:
+                path = ""
+            else:
+                path = parts[1].decode().lstrip("/")   # "/F", "/?x=1", etc.
+            try:
+                body = callback(path)
+            except Exception as e:
+                # If user handler crashes, send simple 500 page
+                body = "Error {}".format(e)
+
+            if body is None:
+                body = ""
+
+            # Send HTTP response
+            cl.send("HTTP/1.1 200 OK\r\n")
+            cl.send("Content-Type: text/html\r\n")
+            cl.send("Connection: close\r\n")
+            cl.send("\r\n")
+            cl.send(body)
+        finally:
+            cl.close()
+
+    def _server_thread(self, callback):
+        socket = _ensure_socket()
+        addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
+        s = socket.socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(addr)
+        s.listen(2)
+
+        while True:
+            cl, addr = s.accept()
+            self._handle_client(cl, addr, callback)
+
+    def start(self, callback):
+        _thread = _ensure_thread()
+        _thread.start_new_thread(self._server_thread, (callback,))
 
