@@ -83,6 +83,7 @@ You can power the ESP32-C3 with a USB powerbank, although these often shutdown a
 ---
 
 # 3. 🏗 Building the Chassis
+![Built Robot](robot.jpg)
 
 ### Option A — 3D Printed (final build)
 - Servos slide into the chassis.
