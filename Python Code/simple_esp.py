@@ -1,7 +1,6 @@
 # simple_esp.py — ESP32-C3 helpers for 72x40 SH1106 display, buttons, servos and bluetooth BLE
 # - Timers: Input=Timer(0), BLE=Timer(1)
 # - 14-char truncation
-
 from machine import Pin, Timer, unique_id
 import time
 
@@ -11,6 +10,10 @@ try:
 except:
     _SCHEDULE = None
 
+
+# ---------------------------------------------------------------------------
+# Lazy module imports — only loaded when a class that needs them is used
+# ---------------------------------------------------------------------------
 _pwm = None
 def _ensure_pwm():
     global _pwm
@@ -89,10 +92,21 @@ def _ensure_thread():
     if __thread is None:
         import _thread
         __thread = _thread
-    return _thread
+    return __thread
 
+_idle = None
+def _ensure_idle():
+    global _idle
+    if _idle is None:
+        from machine import idle
+        _idle = idle
+    return _idle
+
+
+# ---------------------------------------------------------------------------
+# Font — loaded lazily on first small_text() call
+# ---------------------------------------------------------------------------
 _FONT5X7 = None
-
 def _ensure_font():
     global _FONT5X7
     if _FONT5X7 is None:
@@ -124,33 +138,91 @@ def _ensure_font():
         )
     return _FONT5X7
 
-# Reusable buffers for ASCII → framebuffer conversion
+
+# ---------------------------------------------------------------------------
+# Glyph framebuffer — 5x8 MONO_VLSB FrameBuffer reused for every character.
+# Allocated only on first small_text() call.
+# ---------------------------------------------------------------------------
+_GLYPH_BUF = None
+_GLYPH_FB = None
+def _ensure_glyph_fb():
+    global _GLYPH_BUF, _GLYPH_FB
+    if _GLYPH_FB is None:
+        framebuf = _ensure_framebuf()
+        _GLYPH_BUF = bytearray(5)
+        _GLYPH_FB = framebuf.FrameBuffer(_GLYPH_BUF, 5, 8, framebuf.MONO_VLSB)
+    return _GLYPH_BUF, _GLYPH_FB
+
+
+# ---------------------------------------------------------------------------
+# Reusable scratch buffers + cached FrameBuffer wrappers for create_image
+# Allocated only when SmallDisplay.create_image is first called with reusable=True
+# ---------------------------------------------------------------------------
 _FB_SRC = None
 _FB_SCALED = None
 _FB_DST = None
+# Cached FrameBuffer wrappers keyed by (bytearray_id, w, h) so we stop
+# constructing fresh FrameBuffer objects on every redraw.
+_FB_SRC_WRAP = None     # (buf_id, w, h, fb)
+_FB_SCALED_WRAP = None
+_FB_DST_WRAP = None
+
+# Hard ceiling for the source ascii-art buffer in bytes — anything bigger
+# falls back to per-call allocation rather than growing _FB_SRC forever.
+_FB_SRC_MAX = 1024
+
 def _ensure_buffers(src_w, src_h, target_w, target_h):
     global _FB_SRC, _FB_SCALED, _FB_DST
 
-    # Bytes needed for a given width/height in MONO_VLSB
     def need_bytes(w, h):
         return w * ((h + 7) // 8)
 
-    # --- Source buffer ---
     need_src = need_bytes(src_w, src_h)
     if _FB_SRC is None or len(_FB_SRC) < need_src:
+        if need_src > _FB_SRC_MAX:
+            # Caller will get None and fall back to one-shot allocation
+            return None, None, None
         _FB_SRC = bytearray(need_src)
 
-    # --- Scaled buffer (worst case same size as source) ---
     need_scaled = need_bytes(src_w, src_h)
     if _FB_SCALED is None or len(_FB_SCALED) < need_scaled:
         _FB_SCALED = bytearray(need_scaled)
 
-    # --- Destination buffer (only ever one size: 72×40) ---
     need_dst = need_bytes(target_w, target_h)
     if _FB_DST is None or len(_FB_DST) < need_dst:
         _FB_DST = bytearray(need_dst)
 
     return _FB_SRC, _FB_SCALED, _FB_DST
+
+
+def _fb_wrap(slot, buf, w, h):
+    """
+    Cache a FrameBuffer wrapper for a given backing bytearray + (w, h).
+    Rebuilds the wrapper only when the underlying bytearray identity or
+    dimensions change.  `slot` is one of 'src', 'scaled', 'dst'.
+    """
+    global _FB_SRC_WRAP, _FB_SCALED_WRAP, _FB_DST_WRAP
+    framebuf = _ensure_framebuf()
+    if slot == 'src':
+        cached = _FB_SRC_WRAP
+    elif slot == 'scaled':
+        cached = _FB_SCALED_WRAP
+    else:
+        cached = _FB_DST_WRAP
+
+    if cached is not None and cached[0] is buf and cached[1] == w and cached[2] == h:
+        return cached[3]
+
+    fb = framebuf.FrameBuffer(buf, w, h, framebuf.MONO_VLSB)
+    entry = (buf, w, h, fb)
+    if slot == 'src':
+        _FB_SRC_WRAP = entry
+    elif slot == 'scaled':
+        _FB_SCALED_WRAP = entry
+    else:
+        _FB_DST_WRAP = entry
+    return fb
+
 
 # ---------------------------------------------------------------------------
 # SmallDisplay — 72x40 window on SH1106 128x64 (col_offset=28, y_offset=24)
@@ -160,16 +232,17 @@ class SmallDisplay:
 
     def __init__(self):
         SH1106_I2C = _ensure_sh1106()
+        i2c = None
         try:
-            self.hard_reset()
+            i2c = self.hard_reset()
         except Exception:
             pass
         try:
-            i2c = self.new_i2c()
+            if i2c is None:
+                i2c = self.new_i2c()
             self.driver = SH1106_I2C(128, 64, i2c, addr=self.ADDR, col_offset=28)
         except Exception:
             self.driver = None
-
         self.x_offset = 0
         self.y_offset = 24
         self.width, self.height = 72, 40
@@ -178,25 +251,22 @@ class SmallDisplay:
 
     def new_i2c(self):
         I2C = _ensure_i2c()
-        return I2C (0, scl=Pin(self.SCL), sda=Pin(self.SDA), freq=100000)
+        return I2C(0, scl=Pin(self.SCL), sda=Pin(self.SDA), freq=100000)
 
     def hard_reset(self):
-        def reset_pins():
-            scl = Pin(self.SCL, Pin.OUT, value=1)
-            sda = Pin(self.SDA, Pin.IN)
-            for _ in range(9):
-                scl.value(0); scl.value(1)
+        scl = Pin(self.SCL, Pin.OUT, value=1)
+        Pin(self.SDA, Pin.IN)
+        for _ in range(9):
+            scl.value(0); scl.value(1)
 
-        reset_pins()
         i2c = self.new_i2c()
-
         def cmd(c):
             i2c.writeto(self.ADDR, bytes((0x80, c)))
 
-        # Safe-ish init
         for c in (0xAE, 0x20,0x00, 0x40, 0xA1, 0xC8, 0xA8,0x3F, 0xD3,0x00,
                   0xDA,0x12, 0xD5,0x80, 0xD9,0xF1, 0xDB,0x40, 0x8D,0x14, 0xA6, 0xAF):
             cmd(c)
+        return i2c
 
     # --- primitives bounded to 72x40
     def fill(self, c):
@@ -246,22 +316,30 @@ class SmallDisplay:
             self.driver.show()
 
     # --- text (14 chars fit if we advance 5px/char; no extra spacing)
+    # Renders each glyph by blitting a 5x8 MONO_VLSB framebuffer at C speed
+    # instead of ~35 per-character Python pixel() calls.
     def small_text(self, s, x, y):
-        print(s)
         if not self.driver:
             return
-        px = x
+        font = _ensure_font()
+        buf, fb = _ensure_glyph_fb()
+        blit = self.driver.blit
+        px = x + self.x_offset
+        py = y + self.y_offset
+        right = self.x_offset + self.width
+        font_len_minus_5 = len(font) - 5
         for ch in s:
-            g = self.glyph5x7(ch)
-            if g is None:
-                px += 5; continue
-            b0,b1,b2,b3,b4 = g[0], g[1], g[2], g[3], g[4]
-            for cx, byte in ((0,b0),(1,b1),(2,b2),(3,b3),(4,b4)):
-                yy = y; m = byte
-                for _ in range(7):
-                    self.pixel(px+cx, yy, m & 1)
-                    m >>= 1; yy += 1
-            px += 5  # EXACT 5px advance → 14 chars * 5 = 70px (fits in 72px)
+            if px >= right:
+                break
+            o = (ord(ch) - 32) * 5
+            if 0 <= o <= font_len_minus_5:
+                buf[0] = font[o]
+                buf[1] = font[o + 1]
+                buf[2] = font[o + 2]
+                buf[3] = font[o + 3]
+                buf[4] = font[o + 4]
+                blit(fb, px, py)
+            px += 5
 
     def small_text_center(self, s, y=16, show=False, reset=False):
         text_w = len(s) * 5  # 5px per char (no extra spacing)
@@ -274,16 +352,17 @@ class SmallDisplay:
 
     def notify(self, text, ms=1500):
         self.fill(0)
-        self.small_text(text[:14], 0, 16)  # 14 chars
+        self.small_text(text[:14], 0, 16)
         self.show()
         time.sleep_ms(ms)
 
     def display_lines(self, lines, highlight=None):
         page = 0
         if highlight is not None:
-            page = highlight // 5      
+            page = highlight // 5
         start = page * 5
         end = start + 5
+
         self.fill(0)
         y = 0
         for i, line in enumerate(lines[start:end], start=start):
@@ -292,16 +371,17 @@ class SmallDisplay:
                     # cursor bar on the highlighted line
                     self.fill_rect(0, y, 2, 8, 1)
                 self.small_text(line[:14], 4, y)
-            print(("> " if (highlight is not None and i == highlight) else "  ") + line)
             y += 8
         self.show()
-        
+
     def menu(self, lines, btn):
+        idle = _ensure_idle()
         current = 0
         active = True
         prev_click = btn.on_click
         prev_dbl_click = btn.on_double_click
         prev_long_click = btn.on_long_click
+
         def on_click():
             nonlocal current
             current = (current + 1) % len(lines)
@@ -313,31 +393,30 @@ class SmallDisplay:
             self.display_lines(lines, highlight=current)
 
         def on_double_click():
-            nonlocal active, btn
+            nonlocal active
             btn.on_click = prev_click
             btn.on_double_click = prev_dbl_click
             btn.on_long_click = prev_long_click
             active = False
-            
+
         btn.on_click = on_click
         btn.on_double_click = on_double_click
         btn.on_long_click = on_long_click
+
         self.display_lines(lines, highlight=current)
         while active:
             if self._refresh_menu:
                 self.display_lines(lines, highlight=current)
                 self._refresh_menu = False
-            time.sleep_ms(50)
+            idle()  # clock-gated until next IRQ — much lower CPU than sleep_ms(50)
         return current
-    
+
     def refresh_menu(self):
         self._refresh_menu = True
 
     def display_message(self, lines, delay_ms=1500):
         """Utility to show 1–3 centered lines."""
         self.fill(0)
-
-        # lines is a list of strings; we vertically space them by 8px
         start_y = 8 if len(lines) == 1 else 4
         y = start_y
         for line in lines[:3]:
@@ -348,13 +427,13 @@ class SmallDisplay:
             time.sleep_ms(delay_ms)
 
     def glyph5x7(self, ch):
-        font = _ensure_font()    
+        font = _ensure_font()
         o = (ord(ch) - 32) * 5
         if 0 <= o <= len(font) - 5:
-            return memoryview(font)[o:o+5]
+            return memoryview(font)[o:o + 5]
         return None
 
-        # --- ASCII art to framebuffer 
+    # --- ASCII art to framebuffer
     def create_image(self, s, target_w=72, target_h=40, scale_to_fit=True, reusable=False):
         framebuf = _ensure_framebuf()
 
@@ -362,40 +441,51 @@ class SmallDisplay:
         if s.startswith("\n"):
             s = s[1:]
         lines = [ln.rstrip("\n") for ln in s.splitlines()]
+
+        def bytes_for(w, h):
+            return w * ((h + 7) // 8)
+
         if not lines:
             if reusable:
                 _, _, dst_buf = _ensure_buffers(1, 1, target_w, target_h)
-            else:
-                dst_buf = bytearray(target_w * ((target_h + 7) // 8))
+                if dst_buf is not None:
+                    return _fb_wrap('dst', dst_buf, target_w, target_h)
+            dst_buf = bytearray(bytes_for(target_w, target_h))
             return framebuf.FrameBuffer(dst_buf, target_w, target_h, framebuf.MONO_VLSB)
 
         src_w = max(len(ln) for ln in lines)
         src_h = len(lines)
 
-        def bytes_for(w, h):
-            return w * ((h + 7) // 8)
-
-        # Get buffers (either reusable globals or fresh per-call)
+        use_pool = False
+        src_buf = scaled_buf = dst_buf = None
         if reusable:
             src_buf, scaled_buf, dst_buf = _ensure_buffers(src_w, src_h, target_w, target_h)
-        else:
+            use_pool = src_buf is not None  # may have been refused due to _FB_SRC_MAX
+
+        if not use_pool:
             src_buf = bytearray(bytes_for(src_w, src_h))
             scaled_buf = None
             dst_buf = None
 
         # ----- Build source framebuffer -----
-        src_fb = framebuf.FrameBuffer(src_buf, src_w, src_h, framebuf.MONO_VLSB)
+        if use_pool:
+            src_fb = _fb_wrap('src', src_buf, src_w, src_h)
+        else:
+            src_fb = framebuf.FrameBuffer(src_buf, src_w, src_h, framebuf.MONO_VLSB)
         src_fb.fill(0)
-
         for y, ln in enumerate(lines):
             for x, ch in enumerate(ln):
-                src_fb.pixel(x, y, 0 if ch == " " else 1)
+                if ch != " ":
+                    src_fb.pixel(x, y, 1)
 
         # ----- No scaling → just centre directly -----
         if not scale_to_fit:
-            if not reusable:
+            if dst_buf is None:
                 dst_buf = bytearray(bytes_for(target_w, target_h))
-            dst_fb = framebuf.FrameBuffer(dst_buf, target_w, target_h, framebuf.MONO_VLSB)
+            if use_pool:
+                dst_fb = _fb_wrap('dst', dst_buf, target_w, target_h)
+            else:
+                dst_fb = framebuf.FrameBuffer(dst_buf, target_w, target_h, framebuf.MONO_VLSB)
             dst_fb.fill(0)
             ox = (target_w - src_w) // 2
             oy = (target_h - src_h) // 2
@@ -406,54 +496,69 @@ class SmallDisplay:
         sx = target_w / src_w
         sy = target_h / src_h
         scale = min(sx, sy)
-
         new_w = max(1, int(src_w * scale))
         new_h = max(1, int(src_h * scale))
 
         needed_scaled = bytes_for(new_w, new_h)
-        if not reusable or scaled_buf is None or len(scaled_buf) < needed_scaled:
+        if scaled_buf is None or len(scaled_buf) < needed_scaled:
             scaled_buf = bytearray(needed_scaled)
+            use_pool_scaled = False
+        else:
+            use_pool_scaled = use_pool
 
-        # ----- Scale into scaled_fb -----
-        scaled_fb = framebuf.FrameBuffer(scaled_buf, new_w, new_h, framebuf.MONO_VLSB)
+        # ----- Scale into scaled_fb using reciprocal multiply (no per-pixel divide) -----
+        if use_pool_scaled:
+            scaled_fb = _fb_wrap('scaled', scaled_buf, new_w, new_h)
+        else:
+            scaled_fb = framebuf.FrameBuffer(scaled_buf, new_w, new_h, framebuf.MONO_VLSB)
         scaled_fb.fill(0)
-
+        inv = 1.0 / scale
+        max_sy = src_h - 1
+        max_sx = src_w - 1
         for ny in range(new_h):
-            sy_idx = min(src_h - 1, int(ny / scale))
+            sy_idx = int(ny * inv)
+            if sy_idx > max_sy:
+                sy_idx = max_sy
             for nx in range(new_w):
-                sx_idx = min(src_w - 1, int(nx / scale))
-                scaled_fb.pixel(nx, ny, src_fb.pixel(sx_idx, sy_idx))
+                sx_idx = int(nx * inv)
+                if sx_idx > max_sx:
+                    sx_idx = max_sx
+                if src_fb.pixel(sx_idx, sy_idx):
+                    scaled_fb.pixel(nx, ny, 1)
 
         needed_dst = bytes_for(target_w, target_h)
-        if not reusable or dst_buf is None or len(dst_buf) < needed_dst:
+        if dst_buf is None or len(dst_buf) < needed_dst:
             dst_buf = bytearray(needed_dst)
+            use_pool_dst = False
+        else:
+            use_pool_dst = use_pool
 
-        # ----- Blit scaled version centred -----
-        dst_fb = framebuf.FrameBuffer(dst_buf, target_w, target_h, framebuf.MONO_VLSB)
+        if use_pool_dst:
+            dst_fb = _fb_wrap('dst', dst_buf, target_w, target_h)
+        else:
+            dst_fb = framebuf.FrameBuffer(dst_buf, target_w, target_h, framebuf.MONO_VLSB)
         dst_fb.fill(0)
-
         ox = (target_w - new_w) // 2
         oy = (target_h - new_h) // 2
         dst_fb.blit(scaled_fb, ox, oy)
-
         return dst_fb
 
+
+# ---------------------------------------------------------------------------
+# Keyboard — single-button on-screen keyboard
+# ---------------------------------------------------------------------------
 class Keyboard:
     """
     Single-button on-screen keyboard.
 
     Character layout (4 rows, all visible):
-
     Controls via Input:
-
       - single click:
           move to next character; if at end of line, wrap to first character
           of the next line (and wrap from last row back to row 0)
-
       - long click:
           move down one row, keeping column if possible; when wrapping back
           to row 0, column is forced to 0 (start)
-
       - double click:
           '+' : ENTER -> calls on_enter(text) and restores previous Input handlers
           '-' : delete last character (backspace)
@@ -461,7 +566,6 @@ class Keyboard:
           other char: append to text (up to max_len) and call on_change(text)
 
     Display layout (72x40 window):
-
       y=0  : current text (last 14 chars)
       y=8  : row 0
       y=16 : row 1
@@ -469,48 +573,45 @@ class Keyboard:
       y=32 : row 3
     """
 
+    # Row tables are class-level so every Keyboard instance shares one copy.
+    ROWS_UNSHIFT = (
+        "^+- ABCD01234'",
+        "EFGHIJKL56789?",
+        "MNOPQRS.#()+-/",
+        "TUVWXYZ!%<>=*^",
+    )
+    ROWS_SHIFT = (
+        "^+- abcd&:;,",
+        "efghijkl$[]|",
+        "mnopqrs~{}\"",
+        "tuvwxyz@_`\\",
+    )
+
     def __init__(self, button_input, display=None, max_len=14, on_enter=None):
-        self.input = button_input       # Input instance
-        self.display = display          # SmallDisplay instance (optional)
+        self.input = button_input        # Input instance
+        self.display = display           # SmallDisplay instance (optional)
         self.max_len = max_len
 
-        # Unshifted (uppercase + some punctuation, trailing spaces)
-        self.rows_unshift = [
-            "^+- ABCD01234'",  
-            "EFGHIJKL56789?",  
-            "MNOPQRS.#()+-/",
-            "TUVWXYZ!%<>=*^",  
-        ]
-
-        # Shifted (lowercase + extra special characters filling the right side)
-        self.rows_shift = [
-            "^+- abcd&:;,",  
-            "efghijkl$[]|",  
-            "mnopqrs~{}\"",
-            "tuvwxyz@_`\\",  
-        ]
-
-        self.shift = False  # start unshifted
+        self.shift = False               # start unshifted
         self.row = 0
         self.col = 0
         self.text = ""
-        self.on_change = None  # callback(text)
-        self.on_enter = on_enter   # callback(text)
+
+        self.on_change = None            # callback(text)
+        self.on_enter = on_enter         # callback(text)
+
         self.active = False
 
     # ---- rows helper ----
-
     def _rows(self):
-        return self.rows_shift if self.shift else self.rows_unshift
+        return self.ROWS_SHIFT if self.shift else self.ROWS_UNSHIFT
 
     # ---- Input event handlers ----
-
     def _on_click(self):
         if not self.active:
             return
         rows = self._rows()
         row_str = rows[self.row]
-
         # Next character; wrap to next row at end of current row
         self.col += 1
         if self.col >= len(row_str):
@@ -522,46 +623,36 @@ class Keyboard:
         if not self.active:
             return
         rows = self._rows()
-
         # Move down one row, keep column if possible
         self.row = (self.row + 1) % len(rows)
         row_str = rows[self.row]
         if self.col >= len(row_str):
             self.col = len(row_str) - 1
-
         # When wrapping back to row 0, start at first column
         if self.row == 0:
             self.col = 0
-
         self._refresh()
 
     def _on_double_click(self):
         if not self.active:
             return
-
         rows = self._rows()
         ch = rows[self.row][self.col]
 
-        if ch == "+" and self.row == 0:  # ENTER
+        if ch == "+" and self.row == 0:                # ENTER
             if self.on_enter:
                 self.on_enter(self.text)
             self._restore_handlers()
-            # After ENTER we usually stop using the keyboard
             self.active = False
             self.text = ""
-
-        elif ch == "-" and self.row == 0:  # backspace
+        elif ch == "-" and self.row == 0:              # backspace
             if self.text:
                 self.text = self.text[:-1]
                 if self.on_change:
                     self.on_change(self.text)
-
-        elif ch == "^" and self.row == 0:  # SHIFT
-            # Toggle shift: case + special chars
+        elif ch == "^" and self.row == 0:              # SHIFT
             self.shift = not self.shift
-
         else:
-            # Normal character input
             if len(self.text) < self.max_len:
                 self.text += ch
                 if self.on_change:
@@ -573,11 +664,9 @@ class Keyboard:
         self._refresh()
 
     def _init_handlers(self):
-        # Save previous button handlers so we can restore them on ENTER
         self._prev_click = self.input.on_click
         self._prev_double = self.input.on_double_click
         self._prev_long = self.input.on_long_click
-        # Hook into the Input callbacks	
         self.input.on_click = self._on_click
         self.input.on_double_click = self._on_double_click
         self.input.on_long_click = self._on_long_click
@@ -589,13 +678,11 @@ class Keyboard:
         self.input.on_long_click = self._prev_long
 
     # ---- Drawing ----
-
     def _refresh(self):
         if not self.display or not getattr(self.display, "driver", None):
             return
         if not self.active:
             return
-
         d = self.display
         d.fill(0)
 
@@ -604,20 +691,16 @@ class Keyboard:
         d.small_text(show_text, 0, 0)
 
         rows = self._rows()
-
-        # Four rows of characters
         for r, row_str in enumerate(rows):
             y = 8 + r * 8
             d.small_text(row_str, 0, y)
             if r == self.row:
-                # underline current character (5px per char)
                 ux = self.col * 5
                 d.hline(ux, y + 7, 5, 1)
 
         d.show()
 
     # ---- Utility ----
-
     def open(self, text=""):
         """Reset the keyboard text and position, stay active."""
         self.text = text[:self.max_len]
@@ -627,6 +710,7 @@ class Keyboard:
         self.active = True
         self._init_handlers()
         self._refresh()
+
 
 # ---------------------------------------------------------------------------
 # Input — single-button with click/double/long; uses Timer(0)
@@ -646,7 +730,7 @@ class Input:
         self._click_pending = False
         self._timer = None  # Timer(0) allocated on first use
 
-        self.on_press = None   # fires immediately when button goes low, no debouncing or waiting for long click detection
+        self.on_press = None        # fires immediately when button goes low
         self.on_click = None
         self.on_double_click = None
         self.on_long_click = None
@@ -665,7 +749,6 @@ class Input:
             self._down_ms = now
             if self.on_press:
                 self._schedule(self._fire, 'press')
-
             if self._click_pending:
                 self._cancel_timer()
                 self._click_pending = False
@@ -689,10 +772,12 @@ class Input:
         if t is None:
             t = Timer(0)  # only 0 and 1 exist; BLE uses 1
             self._timer = t
+
         def _timeout(_t):
             if self._click_pending:
                 self._click_pending = False
                 self._schedule(self._fire, 'click')
+
         t.init(mode=Timer.ONE_SHOT, period=self.double_ms, callback=_timeout)
 
     def _cancel_timer(self):
@@ -708,10 +793,11 @@ class Input:
             fn(arg)
 
     def _fire(self, kind):
-        if kind == 'press' and self.on_press: self.on_press()
-        elif kind == 'click' and self.on_click: self.on_click()
+        if   kind == 'press'  and self.on_press:        self.on_press()
+        elif kind == 'click'  and self.on_click:        self.on_click()
         elif kind == 'double' and self.on_double_click: self.on_double_click()
-        elif kind == 'long' and self.on_long_click: self.on_long_click()
+        elif kind == 'long'   and self.on_long_click:   self.on_long_click()
+
 
 # ---------------------------------------------------------------------------
 # Bluetooth — simple advertiser/scanner for index + text messages
@@ -720,12 +806,10 @@ class Input:
 # - No scan/adv overlap
 # - Uses Timer(1)
 # ---------------------------------------------------------------------------
-
 _ble_singleton = None  # global singleton BLE controller
 
 
 def _short_id():
-    # Use unique_id() instead of Wi-Fi MAC so we don't need network here
     return unique_id()[-1]
 
 
@@ -735,18 +819,17 @@ class Bluetooth:
     _ADV_TYPE_MANUFACTURER = 0xFF
 
     MAGIC      = b"GBSG"
-    COMPANY_ID = b"\xFF\xFF"   # private use
+    COMPANY_ID = b"\xFF\xFF"  # private use
 
-    # BLE timing constants (µs), and adv interval
-    SCAN_INTERVAL_US = 30000   # 30 ms
-    SCAN_WINDOW_US   = 30000   # 30 ms (<= interval)
+    SCAN_INTERVAL_US = 30000  # 30 ms
+    SCAN_WINDOW_US   = 30000  # 30 ms (<= interval)
     SCAN_ACTIVE      = True
-    ADV_INTERVAL_US  = 20000   # 20 ms
+    ADV_INTERVAL_US  = 20000  # 20 ms
 
     # Events:
-    #  1 = presence (no payload or idx=0)
-    #  2 = index-based message (idx 0–255)
-    #  3 = text-based message (short ASCII string)
+    #   1 = presence (no payload or idx=0)
+    #   2 = index-based message (idx 0–255)
+    #   3 = text-based message (short ASCII string)
     EVT_PRESENCE = 1
     EVT_INDEX    = 2
     EVT_TEXT     = 3
@@ -769,11 +852,11 @@ class Bluetooth:
         self.dev_id = _short_id()
 
         # Callbacks:
-        # - on_index(idx: int)
-        # - on_text(text: str)
-        # - on_message(payload)  # legacy (index OR text)
-        self.on_index = None
-        self.on_text = None
+        #   - on_index(idx: int)
+        #   - on_text(text: str)
+        #   - on_message(payload)  # legacy (index OR text)
+        self.on_index   = None
+        self.on_text    = None
         self.on_message = None
 
         self._timer = Timer(1)  # distinct from Input's Timer(0)
@@ -781,23 +864,26 @@ class Bluetooth:
         # Track last RX to drop duplicates (dev, ev, payload_key, ts)
         self._last_rx = (None, None, None, 0)
 
+        # Preallocated RX buffer so the IRQ can copy raw adv bytes without
+        # allocating, then defer parsing/dedup/dispatch to _process_rx via
+        # micropython.schedule().  _rx_busy gates concurrent overwrites.
+        self._rx_buf  = bytearray(31)   # BLE ADV is max 31 bytes
+        self._rx_len  = 0
+        self._rx_busy = False
+
         global _ble_singleton
         if _ble_singleton is None:
             _ble_singleton = BLE()
         self.ble = _ble_singleton
-
         if not self.ble.active():
             self.ble.active(True)
-        self.ble.irq(self._irq)
 
-        # Optional debug ring (kept tiny if used)
-        self._log = []
+        self.ble.irq(self._irq)
 
     # -------------------------------------------------------------------
     # Advertising / scanning helpers
     # -------------------------------------------------------------------
     def start_scan(self):
-        # Restart scan with sane µs params + active scan
         try:
             self.ble.gap_scan(None)
         except:
@@ -818,23 +904,16 @@ class Bluetooth:
 
         head = flags
         remain = 31 - len(head)
-
-        # Try to include name if everything fits
         if len(name) + len(mf) <= remain:
             return head + name + mf
-
-        # Drop name if needed; keep manufacturer intact
         if len(mf) <= remain:
             return head + mf
-
-        # Last resort: truncate manufacturer (keep MAGIC if possible)
         return (head + mf)[:31]
 
     # -------------------------------------------------------------------
     # Manufacturer payload builders
     # -------------------------------------------------------------------
     def _mfg_index(self, dev_id, idx):
-        # COMPANY_ID + MAGIC + dev + event + idx
         return self.COMPANY_ID + self.MAGIC + bytes((
             dev_id & 0xFF,
             self.EVT_INDEX,
@@ -842,7 +921,6 @@ class Bluetooth:
         ))
 
     def _mfg_presence(self, dev_id):
-        # Presence: idx=0 (unused)
         return self.COMPANY_ID + self.MAGIC + bytes((
             dev_id & 0xFF,
             self.EVT_PRESENCE,
@@ -850,15 +928,6 @@ class Bluetooth:
         ))
 
     def _mfg_text(self, dev_id, text):
-        """
-        Text payload:
-          COMPANY_ID (2)
-          MAGIC      (4)
-          dev_id     (1)
-          event      (1) = EVT_TEXT
-          strlen     (1)
-          text_bytes (strlen)
-        """
         b = text.encode("ascii")[:20]  # keep it small for 31-byte ADV limit
         ln = len(b)
         return self.COMPANY_ID + self.MAGIC + bytes((
@@ -871,22 +940,15 @@ class Bluetooth:
     # Public API: presence, index, text
     # -------------------------------------------------------------------
     def presence(self):
-        """
-        Broadcast a presence message (no extra payload).
-        """
+        """Broadcast a presence message (no extra payload)."""
         self._burst(self._mfg_presence(self.dev_id))
 
     def send_index(self, idx):
-        """
-        Broadcast a small integer index (0–255).
-        """
+        """Broadcast a small integer index (0–255)."""
         self._burst(self._mfg_index(self.dev_id, idx))
 
     def send_text(self, text):
-        """
-        Broadcast a short ASCII text message.
-        Text is truncated to ~20 chars to fit into a single ADV packet.
-        """
+        """Broadcast a short ASCII text message (truncated to ~20 chars)."""
         self._burst(self._mfg_text(self.dev_id, text))
 
     # -------------------------------------------------------------------
@@ -898,7 +960,6 @@ class Bluetooth:
             self.ble.gap_scan(None)
         except:
             pass
-
         self.ble.gap_advertise(self.ADV_INTERVAL_US, adv_data=payload)
         self._timer.init(
             mode=Timer.ONE_SHOT,
@@ -910,7 +971,6 @@ class Bluetooth:
         try:
             self.ble.gap_advertise(None)
         finally:
-            # Resume scanning with sane µs params + active scan
             try:
                 self.ble.gap_scan(0, self.SCAN_INTERVAL_US, self.SCAN_WINDOW_US, self.SCAN_ACTIVE)
             except:
@@ -919,60 +979,74 @@ class Bluetooth:
     # -------------------------------------------------------------------
     # RX path: IRQ handler + manufacturer parser
     # -------------------------------------------------------------------
+    # The IRQ does the minimum possible work — copy raw adv bytes into a
+    # preallocated buffer using a manual loop (no slice alloc, no range
+    # object, no memoryview) and hand off to _process_rx via the scheduler.
+    # All parsing, decoding, dedup and dispatch happens in normal context.
     def _irq(self, event, data):
         # 5: _IRQ_SCAN_RESULT -> (addr_type, addr, adv_type, rssi, adv_data)
-        if event == 5 and data:
+        if event != 5 or not data:
+            return
+        if self._rx_busy:
+            return  # scheduler hasn't drained the previous advert yet
+        try:
+            adv = data[4]
+        except Exception:
+            return
+        m = len(adv)
+        if m > 31:
+            m = 31
+        buf = self._rx_buf
+        i = 0
+        while i < m:
+            buf[i] = adv[i]
+            i += 1
+        self._rx_len = m
+        self._rx_busy = True
+        if _SCHEDULE:
+            _SCHEDULE(self._process_rx, None)
+        else:
+            self._process_rx(None)
+
+    def _process_rx(self, _):
+        """Parse + dedup + dispatch.  Runs in normal context, not IRQ."""
+        try:
+            n = self._rx_len
+            adv = memoryview(self._rx_buf)[:n]
             try:
-                adv = data[4]
-                dev, ev, payload = self._parse_mfg(memoryview(adv))
-                if dev is None:
-                    return
+                dev, ev, payload = self._parse_mfg(adv)
+            except Exception:
+                return
+            if dev is None:
+                return
 
-                # Dedup: drop repeats within 600ms for same (dev, ev, payload_key)
-                now = time.ticks_ms()
+            # Dedup: drop repeats within 600ms for same (dev, ev, payload_key)
+            now = time.ticks_ms()
+            if isinstance(payload, str):
+                key = ("T", payload)
+            elif isinstance(payload, int):
+                key = ("I", payload)
+            else:
                 key = payload
-                if isinstance(key, str):
-                    key = ("T", key)   # distinguish string vs int
-                elif isinstance(key, int):
-                    key = ("I", key)
 
-                last_dev, last_ev, last_key, last_ts = self._last_rx
-                if (dev, ev, key) == (last_dev, last_ev, last_key):
-                    if time.ticks_diff(now, last_ts) < 600:
-                        return  # duplicate
-                self._last_rx = (dev, ev, key, now)
+            last_dev, last_ev, last_key, last_ts = self._last_rx
+            if (dev, ev, key) == (last_dev, last_ev, last_key):
+                if time.ticks_diff(now, last_ts) < 600:
+                    return
+            self._last_rx = (dev, ev, key, now)
 
-                # Dispatch to callbacks
-                if ev == self.EVT_INDEX and payload is not None:
-                    idx = payload
-                    # Prefer on_index; fall back to legacy on_message
-                    cb = self.on_index or self.on_message
-                    if cb:
-                        if _SCHEDULE:
-                            _SCHEDULE(lambda a: cb(a), idx)
-                        else:
-                            cb(idx)
-
-                elif ev == self.EVT_TEXT and payload is not None:
-                    text = payload
-                    cb = self.on_text or self.on_message
-                    if cb:
-                        if _SCHEDULE:
-                            _SCHEDULE(lambda a: cb(a), text)
-                        else:
-                            cb(text)
-
-                elif ev == self.EVT_PRESENCE:
-                    # You could add on_presence here if you want in future
-                    pass
-
-            except Exception as e:
-                try:
-                    self._log.append(("err", e))
-                    if len(self._log) > 16:
-                        self._log.pop(0)
-                except:
-                    pass
+            # Dispatch to callbacks
+            if ev == self.EVT_INDEX and payload is not None:
+                cb = self.on_index or self.on_message
+                if cb:
+                    cb(payload)
+            elif ev == self.EVT_TEXT and payload is not None:
+                cb = self.on_text or self.on_message
+                if cb:
+                    cb(payload)
+            # EVT_PRESENCE: nothing to dispatch
+        finally:
+            self._rx_busy = False
 
     def _parse_mfg(self, adv):
         """
@@ -1000,10 +1074,10 @@ class Bluetooth:
                 # Minimum: COMPANY_ID(2) + MAGIC(4) + dev(1) + ev(1) + one extra (idx/len)
                 base_need = len(self.COMPANY_ID) + len(self.MAGIC) + 3
                 if ln >= 1 + base_need:  # ln includes type(1)+data
-                    if adv[start:start+2] == self.COMPANY_ID and adv[start+2:start+6] == self.MAGIC:
-                        dev = adv[start+6]
-                        ev  = adv[start+7]
-                        third = adv[start+8]
+                    if adv[start:start + 2] == self.COMPANY_ID and adv[start + 2:start + 6] == self.MAGIC:
+                        dev = adv[start + 6]
+                        ev  = adv[start + 7]
+                        third = adv[start + 8]
 
                         if ev == self.EVT_INDEX:
                             idx = third
@@ -1011,8 +1085,7 @@ class Bluetooth:
 
                         elif ev == self.EVT_TEXT:
                             strlen = third
-                            # Data bytes for this field go up to i+1+ln
-                            text_start = start + 9  # 2+4+1+1+1 = 9 bytes header
+                            text_start = start + 9
                             text_end   = text_start + strlen
                             if text_end <= i + 1 + ln:
                                 text = bytes(adv[text_start:text_end]).decode("ascii")
@@ -1026,6 +1099,10 @@ class Bluetooth:
 
         return None, None, None
 
+
+# ---------------------------------------------------------------------------
+# Robot — differential drive built on two continuous-rotation servos
+# ---------------------------------------------------------------------------
 class Robot:
     """
     Differential-drive robot using two continuous servos.
@@ -1037,16 +1114,14 @@ class Robot:
       -ve = left wheel too fast → slow left
     """
     def __init__(self, left_servo, right_servo, speed=1, calibrate=0, display=None):
-        self.display=display
+        self.display = display
         self.left_servo = left_servo
         self.right_servo = right_servo
         self.speed = speed
-        self.cal = calibrate 
+        self.cal = calibrate
 
     def _apply_calibration(self, sp):
-        """
-        Calibration reduces the speed of the faster wheel.
-        """
+        """Calibration reduces the speed of the faster wheel."""
         left_sp  = max(min(sp - self.cal, 1), -1)
         right_sp = max(min(sp + self.cal, 1), -1)
         return left_sp, right_sp
@@ -1090,18 +1165,20 @@ class Robot:
         self.left_servo.stop()
         self.right_servo.stop()
 
+
+# ---------------------------------------------------------------------------
+# Servo — simple PWM helper, period cached in __init__ to avoid recomputing
+# ---------------------------------------------------------------------------
 class Servo:
     """
     Simple servo helper for MicroPython (ESP32, etc.)
 
     - Positional servo (e.g. SG90):
-        s = SimpleServo(pin=18)
-        s.angle(0)
-        s.angle(90)
-        s.angle(180)
+        s = Servo(pin=18)
+        s.angle(0); s.angle(90); s.angle(180)
 
     - Continuous rotation (e.g. FS90R):
-        s = SimpleServo(pin=18, stop_us=1500)
+        s = Servo(pin=18, stop_us=1500)
         s.speed(0)   # stop
         s.speed(1)   # full forward
         s.speed(-1)  # full reverse
@@ -1109,15 +1186,16 @@ class Servo:
 
     def __init__(self, pin, *, freq=50, min_us=500, max_us=2500, stop_us=None):
         _ensure_pwm()
-        self.pwm = _pwm(Pin(pin), freq=freq)
-        self.freq = freq
-        self.min_us = min_us
-        self.max_us = max_us
+        self.pwm     = _pwm(Pin(pin), freq=freq)
+        self.freq    = freq
+        self.min_us  = min_us
+        self.max_us  = max_us
         self.stop_us = stop_us if stop_us is not None else (min_us + max_us) // 2
+        # Cache period and reciprocal — used on every PWM update
+        self._period_us = 1_000_000 // freq
 
     def _us_to_duty(self, us):
-        period_us = 1_000_000 // self.freq
-        duty = int(us * 65535 // period_us)
+        duty = int(us * 65535 // self._period_us)
         if duty < 0:
             duty = 0
         elif duty > 65535:
@@ -1158,6 +1236,7 @@ class Servo:
     def deinit(self):
         self.pwm.deinit()
 
+
 # ---------------------------------------------------------------------------
 # Wi-Fi helper (lazy import; minimal)
 # ---------------------------------------------------------------------------
@@ -1186,12 +1265,16 @@ def connect_wifi(ssid=None, password=None, timeout=10):
         try:
             ntptime.settime()
         except Exception:
-            pass 
+            pass
         print("Connected! IP:", wlan.ifconfig()[0])
         return wlan
-    print("Failed to connect."); 
+    print("Failed to connect.")
     return None
 
+
+# ---------------------------------------------------------------------------
+# Registry — tiny JSON key/value store
+# ---------------------------------------------------------------------------
 class Registry:
     """
     Tiny key→value store saved in a JSON file.
@@ -1210,8 +1293,6 @@ class Registry:
         """Load registry file into memory if not already loaded."""
         if self._data is not None:
             return
-
-        # Default to empty dict if file missing or broken
         json = _ensure_json()
         self._data = {}
         try:
@@ -1221,59 +1302,46 @@ class Registry:
             if isinstance(obj, dict):
                 self._data = obj
         except:
-            # File not found or JSON error -> keep empty dict
             self._data = {}
 
     def _save(self):
-        """Write current data to flash as JSON."""
+        """Write current data to flash as JSON (atomic via tmp + rename)."""
         if self._data is None:
             return
-
-        # Write to a temp file then rename (safer if power cuts out)
         os = _ensure_os()
         json = _ensure_json()
         tmp_name = self.filename + ".tmp"
         try:
             with open(tmp_name, "w") as f:
                 f.write(json.dumps(self._data))
-
             try:
                 os.remove(self.filename)
             except:
                 pass
             os.rename(tmp_name, self.filename)
         except:
-            # If anything goes wrong, just ignore (no crash in games)
             pass
 
     # -------- public API --------
     def get(self, key, default=None):
-        """
-        Read a value from the registry.
-        Example: REGISTRY.get("flappy.best", 0)
-        """
         self._ensure_loaded()
         return self._data.get(key, default)
 
     def set(self, key, value):
-        """
-        Save a value to the registry.
-        Example: REGISTRY.set("flappy.best", 10)
-        """
         self._ensure_loaded()
         self._data[key] = value
         self._save()
 
     def delete(self, key):
-        """
-        Remove a key from the registry (if it exists).
-        """
         self._ensure_loaded()
         if key in self._data:
             del self._data[key]
             self._save()
 
 
+# ---------------------------------------------------------------------------
+# Http — minimal HTTP server on port 80, dispatching paths to a callback
+# ---------------------------------------------------------------------------
 class Http:
     def _handle_client(self, cl, addr, callback):
         try:
@@ -1287,17 +1355,14 @@ class Http:
             if len(parts) < 2:
                 path = ""
             else:
-                path = parts[1].decode().lstrip("/")   # "/F", "/?x=1", etc.
+                path = parts[1].decode().lstrip("/")
             try:
                 body = callback(path)
             except Exception as e:
-                # If user handler crashes, send simple 500 page
                 body = "Error {}".format(e)
-
             if body is None:
                 body = ""
 
-            # Send HTTP response
             cl.send("HTTP/1.1 200 OK\r\n")
             cl.send("Content-Type: text/html\r\n")
             cl.send("Connection: close\r\n")
@@ -1321,4 +1386,3 @@ class Http:
     def start(self, callback):
         _thread = _ensure_thread()
         _thread.start_new_thread(self._server_thread, (callback,))
-
